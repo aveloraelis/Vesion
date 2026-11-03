@@ -19,7 +19,9 @@
 
 import { classNameFactory } from "@api/Styles";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
-import { Forms, ScrollerThin, Text } from "@webpack/common";
+import { ScrollerThin } from "@webpack/common";
+
+import { Forms, Text } from "./compat";
 
 import { lastKnownUsers } from "../store";
 import { ProfileCard } from "./ProfileCard";

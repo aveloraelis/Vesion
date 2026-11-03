@@ -19,9 +19,10 @@
 
 import { classNameFactory } from "@api/Styles";
 import { Button } from "@components/Button";
-import { FormSwitchCompat } from "@components/FormSwitch";
 import { ModalCloseButton, ModalContent, ModalHeader, type ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
-import { Forms, GuildStore, ScrollerThin, Text, useState } from "@webpack/common";
+import { GuildStore, ScrollerThin, useState } from "@webpack/common";
+
+import { Forms, FormSwitchCompat, Text } from "./compat";
 
 import { getUserConfig, persistUserConfig } from "../store";
 import { UserStalkerConfig } from "../types";

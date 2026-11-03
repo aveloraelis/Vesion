@@ -21,7 +21,9 @@ import { classNameFactory } from "@api/Styles";
 import { Button } from "@components/Button";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { PluginNative } from "@utils/types";
-import { Forms, GuildStore, NavigationRouter, ScrollerThin, TabBar, Text, Tooltip, useEffect, useMemo, UserStore,useState } from "@webpack/common";
+import { GuildStore, NavigationRouter, ScrollerThin, TabBar, Tooltip, useEffect, useMemo, UserStore, useState } from "@webpack/common";
+
+import { Forms, Text } from "./compat";
 
 import { isDebugEnabled } from "../settings";
 import { clearProfileSnapshots, loadPresenceLogs, presenceLogListeners, presenceLogs } from "../store";

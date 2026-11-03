@@ -45,7 +45,9 @@ const HTTP_STATUS_MAP: Record<number, string> = {
 function getErrorCode(error: any): number | null {
     let code = error?.body?.code || error?.code;
     if (!code && error?.text) {
-        try { code = JSON.parse(error.text)?.code; } catch (_) { }
+        try {
+            code = JSON.parse(error.text)?.code;
+        } catch {}
     }
     return typeof code === "number" ? code : null;
 }
@@ -59,25 +61,19 @@ function isFatalError(error: any): boolean {
 
 export function translateError(error: any): string {
     if (!error) return "Unknown error";
-
     if (typeof error === "string") return error;
     if (error.message === "Cancelled" || error.message?.includes("Cancelled")) return "";
     if (error.message === "Skipped") return "";
 
     const code = getErrorCode(error);
-
-    if (code && DISCORD_ERROR_MAP[code]) {
-        return DISCORD_ERROR_MAP[code];
-    }
-
-    if (error?.status && HTTP_STATUS_MAP[error.status]) {
-        return HTTP_STATUS_MAP[error.status];
-    }
+    if (code && DISCORD_ERROR_MAP[code]) return DISCORD_ERROR_MAP[code];
+    if (error?.status && HTTP_STATUS_MAP[error.status]) return HTTP_STATUS_MAP[error.status];
 
     let message = error?.body?.message || error?.message || "";
-
     if (!message && error?.text) {
-        try { message = JSON.parse(error.text)?.message || ""; } catch (_) { }
+        try {
+            message = JSON.parse(error.text)?.message || "";
+        } catch {}
     }
 
     if (message) {
@@ -89,10 +85,15 @@ export function translateError(error: any): string {
 }
 
 export function handleCloneError(context: string, error: any, itemName?: string): void {
-    if (!state.isCloning && state.abortController?.signal.aborted) return;
+    if (!state.isCloning || state.abortController?.signal.aborted) return;
 
     const translated = translateError(error);
     if (!translated) return;
+
+    const errorMsg = itemName
+        ? `[${context}] ${itemName}: ${translated}`
+        : `[${context}]: ${translated}`;
+    state.cloneErrors.push(errorMsg);
 
     if (isFatalError(error)) {
         state.isCloning = false;

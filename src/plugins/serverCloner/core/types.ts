@@ -1,16 +1,15 @@
 import { Guild } from "@vencord/discord-types";
 import { CloneOptions } from "../types";
-import { RateLimiter } from "../utils/rateLimiter";
+import { TaskQueue } from "../utils/TaskQueue";
 
 export interface CloneContext {
     sourceGuild: Guild;
-    fullGuildData: any;
+    fullGuildData: Record<string, any>;
     newGuildId: string;
     options: CloneOptions;
     roleIdMap: Record<string, string>;
     channelIdMap: Record<string, string>;
-    roleRateLimiter: RateLimiter;
-    channelRateLimiter: RateLimiter;
+    taskQueue: TaskQueue;
     estimateChannels: any[];
     estimateRoles: any[];
     rolesProgressStart: number;
@@ -19,4 +18,8 @@ export interface CloneContext {
     channelsProgressEnd: number;
     settingsProgressEnd: number;
     onboardingProgressStart: number;
+    stickersProgressStart: number;
+    stickersProgressEnd: number;
+    soundboardProgressStart: number;
+    soundboardProgressEnd: number;
 }

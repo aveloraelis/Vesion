@@ -1,37 +1,62 @@
-import { RestAPI } from "@webpack/common";
+import { RestAPI, GuildStore } from "@webpack/common";
 import { replaceEmojis, sleep } from "../utils/helpers";
 import { checkGuildExistence } from "../utils/api";
 import { updateWithTime } from "../utils/notifications";
+import { state } from "../store";
 import { handleCloneError } from "../utils/errorHandler";
-import { state, throwIfCancelled } from "../store";
 import { CloneContext } from "./types";
 
-export async function cloneChannels(ctx: CloneContext): Promise<number> {
+export interface CloneChannelsResult {
+    channelsCloned: number;
+    categoriesCloned: number;
+    channelsFailed: number;
+    categoriesFailed: number;
+}
+
+export async function cloneChannels(ctx: CloneContext): Promise<CloneChannelsResult> {
     let channelsFailed = 0;
-    const { sourceGuild, fullGuildData, newGuildId, options, estimateChannels, channelIdMap, roleIdMap, channelRateLimiter, channelsProgressStart, channelsProgressEnd } = ctx;
+    let categoriesFailed = 0;
+    let channelsCloned = 0;
+    let categoriesCloned = 0;
+    const {
+        sourceGuild,
+        fullGuildData,
+        newGuildId,
+        options,
+        estimateChannels,
+        channelIdMap,
+        roleIdMap,
+        taskQueue,
+        channelsProgressStart,
+        channelsProgressEnd,
+    } = ctx;
 
     const allChannels = estimateChannels;
 
-    const categories = allChannels.filter((c: any) => c.type === 4).sort((a: any, b: any) => a.position - b.position);
-    const otherChannels = allChannels.filter((c: any) => c.type !== 4).sort((a: any, b: any) => a.position - b.position);
+    const selectedChannelSet = Array.isArray(options.selectedChannelIds)
+        ? new Set(options.selectedChannelIds)
+        : null;
+    const isSelectedChannel = (c: any) => !selectedChannelSet || selectedChannelSet.has(c.id);
+
+    const categories = allChannels
+        .filter((c: any) => c.type === 4 && isSelectedChannel(c))
+        .sort((a: any, b: any) => a.position - b.position);
+    const otherChannels = allChannels
+        .filter((c: any) => c.type !== 4 && isSelectedChannel(c))
+        .sort((a: any, b: any) => a.position - b.position);
 
     let existingTargetChannels: any[] = [];
     if (options.resumeMode) {
         const targetChResponse = await RestAPI.get({ url: `/guilds/${newGuildId}/channels` });
         existingTargetChannels = targetChResponse.body || [];
-
-        for (const cat of categories) {
-            const match = existingTargetChannels.find((tc: any) => tc.name === cat.name && tc.type === 4);
-            if (match) channelIdMap[cat.id] = match.id;
-        }
-        for (const ch of otherChannels) {
-            const match = existingTargetChannels.find((tc: any) => tc.name === ch.name && tc.type === ch.type);
-            if (match) channelIdMap[ch.id] = match.id;
-        }
     }
 
-    const categoriesToCreate = options.resumeMode ? categories.filter((c: any) => !channelIdMap[c.id]) : categories;
-    const channelsToCreate = options.resumeMode ? otherChannels.filter((c: any) => !channelIdMap[c.id]) : otherChannels;
+    const categoriesToCreate = options.resumeMode
+        ? categories.filter((c: any) => !channelIdMap[c.id])
+        : categories;
+    const channelsToCreate = options.resumeMode
+        ? otherChannels.filter((c: any) => !channelIdMap[c.id])
+        : otherChannels;
     const totalChannels = categoriesToCreate.length + channelsToCreate.length;
     const actionLabel = options.resumeMode ? "Resuming" : "Cloning";
 
@@ -42,53 +67,88 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
     }
 
     let catStored = 0;
-    for (const cat of categoriesToCreate) {
-        checkGuildExistence(sourceGuild.id, newGuildId);
-        if (!state.isCloning) break;
-        catStored++;
+    const catPromises = categoriesToCreate.map(async (cat: any) => {
+        if (!state.isCloning) return;
 
         try {
-            const progress = channelsProgressStart + ((catStored / Math.max(categoriesToCreate.length, 1)) * ((channelsProgressEnd - channelsProgressStart) * 0.2));
-            updateWithTime(`${actionLabel} category ${catStored}/${categoriesToCreate.length}: ${cat.name}`, progress);
+            checkGuildExistence(sourceGuild.id, newGuildId);
 
             const catPayload: any = {
                 name: cat.name,
                 type: 4,
                 position: cat.position,
-                permission_overwrites: []
+                permission_overwrites: [],
             };
 
             if (cat.permission_overwrites) {
                 const mappedOverwrites = cat.permission_overwrites
-                    .filter((ow: any) => ow.type === 0 && roleIdMap[ow.id])
+                    .filter(
+                        (ow: any) => ow.type === 0 && (roleIdMap[ow.id] || ow.id === sourceGuild.id)
+                    )
                     .map((ow: any) => ({
-                        id: roleIdMap[ow.id],
+                        id: ow.id === sourceGuild.id ? newGuildId : roleIdMap[ow.id],
                         type: 0,
                         allow: ow.allow,
-                        deny: ow.deny
+                        deny: ow.deny,
                     }));
-                if (mappedOverwrites.length > 0) catPayload.permission_overwrites = mappedOverwrites;
+                if (mappedOverwrites.length > 0)
+                    catPayload.permission_overwrites = mappedOverwrites;
             }
 
-            const response = await channelRateLimiter.execute(async () => {
-                return await RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: catPayload });
-            });
+            const response = await taskQueue.execute(
+                async () => {
+                    return await RestAPI.post({
+                        url: `/guilds/${newGuildId}/channels`,
+                        body: catPayload,
+                    });
+                },
+                (msg) =>
+                    updateWithTime(
+                        msg,
+                        channelsProgressStart +
+                            (catStored / Math.max(categoriesToCreate.length, 1)) *
+                                ((channelsProgressEnd - channelsProgressStart) * 0.2)
+                    )
+            );
 
             if (response?.body?.id) {
                 channelIdMap[cat.id] = response.body.id;
             }
+
+            catStored++;
+            categoriesCloned++;
+            const progress =
+                channelsProgressStart +
+                (catStored / Math.max(categoriesToCreate.length, 1)) *
+                    ((channelsProgressEnd - channelsProgressStart) * 0.2);
+            updateWithTime(
+                `${actionLabel} category ${catStored}/${categoriesToCreate.length}: ${cat.name}`,
+                progress
+            );
         } catch (e) {
-            channelsFailed++;
+            categoriesFailed++;
+            state.failedItems.push({
+                context: "Category",
+                name: cat.name,
+                error: (e as Error)?.message || String(e),
+                sourceData: cat,
+            });
             handleCloneError("Category", e, cat.name);
         }
-    }
+    });
 
-    const isCommunity = fullGuildData.features?.includes("COMMUNITY") ||
+    await Promise.all(catPromises);
+
+    const isCommunity =
+        fullGuildData.features?.includes("COMMUNITY") ||
         otherChannels.some((c: any) => [5, 13, 15, 16].includes(c.type));
 
     if (isCommunity && !options.resumeMode) {
-        updateWithTime("Enabling Community features...", channelsProgressStart + ((channelsProgressEnd - channelsProgressStart) * 0.25));
-        
+        updateWithTime(
+            "Enabling Community features...",
+            channelsProgressStart + (channelsProgressEnd - channelsProgressStart) * 0.25
+        );
+
         try {
             let rulesChannelNewId: string | null = null;
             let updatesChannelNewId: string | null = null;
@@ -110,7 +170,9 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
                 if (sourceRulesChannel.parent_id && channelIdMap[sourceRulesChannel.parent_id]) {
                     rulesPayload.parent_id = channelIdMap[sourceRulesChannel.parent_id];
                 }
-                const r1 = await channelRateLimiter.execute(() => RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: rulesPayload }));
+                const r1 = (await taskQueue.execute(() =>
+                    RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: rulesPayload })
+                )) as any;
                 if (r1?.body?.id) {
                     rulesChannelNewId = r1.body.id;
                     channelIdMap[sourceRulesChannel.id] = r1.body.id;
@@ -124,10 +186,15 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
                     topic: sourceUpdatesChannel.topic || undefined,
                     position: sourceUpdatesChannel.position,
                 };
-                if (sourceUpdatesChannel.parent_id && channelIdMap[sourceUpdatesChannel.parent_id]) {
+                if (
+                    sourceUpdatesChannel.parent_id &&
+                    channelIdMap[sourceUpdatesChannel.parent_id]
+                ) {
                     updatesPayload.parent_id = channelIdMap[sourceUpdatesChannel.parent_id];
                 }
-                const r2 = await channelRateLimiter.execute(() => RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: updatesPayload }));
+                const r2 = (await taskQueue.execute(() =>
+                    RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: updatesPayload })
+                )) as any;
                 if (r2?.body?.id) {
                     updatesChannelNewId = r2.body.id;
                     channelIdMap[sourceUpdatesChannel.id] = r2.body.id;
@@ -135,11 +202,21 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
             }
 
             if (!rulesChannelNewId) {
-                const fallback = await channelRateLimiter.execute(() => RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: { name: "rules", type: 0 } }));
+                const fallback = (await taskQueue.execute(() =>
+                    RestAPI.post({
+                        url: `/guilds/${newGuildId}/channels`,
+                        body: { name: "rules", type: 0 },
+                    })
+                )) as any;
                 rulesChannelNewId = fallback?.body?.id || null;
             }
             if (!updatesChannelNewId) {
-                const fallback = await channelRateLimiter.execute(() => RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: { name: "updates", type: 0 } }));
+                const fallback = (await taskQueue.execute(() =>
+                    RestAPI.post({
+                        url: `/guilds/${newGuildId}/channels`,
+                        body: { name: "updates", type: 0 },
+                    })
+                )) as any;
                 updatesChannelNewId = fallback?.body?.id || null;
             }
 
@@ -151,13 +228,13 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
                         rules_channel_id: rulesChannelNewId,
                         public_updates_channel_id: updatesChannelNewId,
                         verification_level: 1,
-                        explicit_content_filter: 2
-                    }
+                        explicit_content_filter: 2,
+                    },
                 });
                 await sleep(1500);
             }
         } catch (e) {
-            console.warn("[ServerCloner] Failed to enable community:", e);
+            console.warn("[Clonecord] Failed to enable community:", e);
         }
     }
 
@@ -182,10 +259,10 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
 
                         await RestAPI.patch({
                             url: `/guilds/${newGuildId}/channels/${match.id}`,
-                            body: patchBody
+                            body: patchBody,
                         });
                     } catch (e) {
-                        console.warn(`[ServerCloner] Failed to patch existing channel emoji: ${ch.name}`, e);
+                        console.warn(`[Clonecord] Failed to patch channel emoji: ${ch.name}`, e);
                     }
                 }
             }
@@ -195,14 +272,14 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
     const remainingChannels = channelsToCreate.filter((c: any) => !alreadyCloned.has(c.id));
 
     let chStored = 0;
-    for (const ch of remainingChannels) {
-        checkGuildExistence(sourceGuild.id, newGuildId);
-        if (!state.isCloning) break;
-        chStored++;
+    let skipRemaining = false;
+
+    const channelPromises = remainingChannels.map(async (ch: any) => {
+        if (!state.isCloning) return;
+        if (skipRemaining) return;
 
         try {
-            const progress = channelsProgressStart + ((channelsProgressEnd - channelsProgressStart) * 0.2) + ((chStored / Math.max(remainingChannels.length, 1)) * ((channelsProgressEnd - channelsProgressStart) * 0.8));
-            updateWithTime(`${actionLabel} channel ${chStored}/${remainingChannels.length}: ${ch.name}`, progress);
+            checkGuildExistence(sourceGuild.id, newGuildId);
 
             const chPayload: any = {
                 name: replaceEmojis(ch.name),
@@ -211,7 +288,7 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
                 topic: replaceEmojis(ch.topic),
                 nsfw: ch.nsfw,
                 rate_limit_per_user: ch.rate_limit_per_user,
-                permission_overwrites: []
+                permission_overwrites: [],
             };
 
             if (ch.parent_id && channelIdMap[ch.parent_id]) {
@@ -219,7 +296,17 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
             }
 
             if (ch.type === 2 || ch.type === 13) {
-                chPayload.bitrate = Math.min(ch.bitrate || 64000, 96000);
+                const targetGuildForBitrate = GuildStore.getGuild(newGuildId);
+                const targetTier = (targetGuildForBitrate as any)?.premiumTier || 0;
+                const maxBitrate =
+                    targetTier >= 3
+                        ? 384000
+                        : targetTier >= 2
+                          ? 256000
+                          : targetTier >= 1
+                            ? 128000
+                            : 96000;
+                chPayload.bitrate = Math.min(ch.bitrate || 64000, maxBitrate);
                 chPayload.user_limit = ch.user_limit || 0;
             }
 
@@ -227,57 +314,105 @@ export async function cloneChannels(ctx: CloneContext): Promise<number> {
                 if (ch.available_tags && Array.isArray(ch.available_tags)) {
                     chPayload.available_tags = ch.available_tags.map((tag: any) => ({
                         name: replaceEmojis(tag.name),
-                        emoji_id: tag.emoji_id && state.emojiIdMap[tag.emoji_id] ? state.emojiIdMap[tag.emoji_id] : null,
+                        emoji_id:
+                            tag.emoji_id && state.emojiIdMap[tag.emoji_id]
+                                ? state.emojiIdMap[tag.emoji_id]
+                                : null,
                         emoji_name: tag.emoji_name || null,
-                        moderated: tag.moderated || false
+                        moderated: tag.moderated || false,
                     }));
                 }
                 if (ch.default_reaction_emoji) {
-                    if (ch.default_reaction_emoji.emoji_id && state.emojiIdMap[ch.default_reaction_emoji.emoji_id]) {
+                    if (
+                        ch.default_reaction_emoji.emoji_id &&
+                        state.emojiIdMap[ch.default_reaction_emoji.emoji_id]
+                    ) {
                         chPayload.default_reaction_emoji = {
                             emoji_id: state.emojiIdMap[ch.default_reaction_emoji.emoji_id],
-                            emoji_name: ch.default_reaction_emoji.emoji_name || null
+                            emoji_name: ch.default_reaction_emoji.emoji_name || null,
                         };
-                    } else if (ch.default_reaction_emoji.emoji_name && !ch.default_reaction_emoji.emoji_id) {
+                    } else if (
+                        ch.default_reaction_emoji.emoji_name &&
+                        !ch.default_reaction_emoji.emoji_id
+                    ) {
                         chPayload.default_reaction_emoji = {
                             emoji_id: null,
-                            emoji_name: ch.default_reaction_emoji.emoji_name
+                            emoji_name: ch.default_reaction_emoji.emoji_name,
                         };
                     }
                 }
-                if (ch.default_sort_order !== undefined) chPayload.default_sort_order = ch.default_sort_order;
-                if (ch.default_forum_layout !== undefined) chPayload.default_forum_layout = ch.default_forum_layout;
+                if (ch.default_sort_order !== undefined)
+                    chPayload.default_sort_order = ch.default_sort_order;
+                if (ch.default_forum_layout !== undefined)
+                    chPayload.default_forum_layout = ch.default_forum_layout;
             }
 
             if (ch.permission_overwrites) {
                 const mappedOverwrites = ch.permission_overwrites
-                    .filter((ow: any) => ow.type === 0 && roleIdMap[ow.id])
+                    .filter(
+                        (ow: any) => ow.type === 0 && (roleIdMap[ow.id] || ow.id === sourceGuild.id)
+                    )
                     .map((ow: any) => ({
-                        id: roleIdMap[ow.id],
+                        id: ow.id === sourceGuild.id ? newGuildId : roleIdMap[ow.id],
                         type: 0,
                         allow: ow.allow,
-                        deny: ow.deny
+                        deny: ow.deny,
                     }));
                 if (mappedOverwrites.length > 0) chPayload.permission_overwrites = mappedOverwrites;
             }
 
-            const response = await channelRateLimiter.execute(async () => {
-                return await RestAPI.post({ url: `/guilds/${newGuildId}/channels`, body: chPayload });
-            });
+            const response = await taskQueue.execute(
+                async () => {
+                    return await RestAPI.post({
+                        url: `/guilds/${newGuildId}/channels`,
+                        body: chPayload,
+                    });
+                },
+                (msg) =>
+                    updateWithTime(
+                        msg,
+                        channelsProgressStart +
+                            (channelsProgressEnd - channelsProgressStart) * 0.2 +
+                            (chStored / Math.max(remainingChannels.length, 1)) *
+                                ((channelsProgressEnd - channelsProgressStart) * 0.8)
+                    )
+            );
 
             if (response?.body?.id) {
                 channelIdMap[ch.id] = response.body.id;
             }
+
+            chStored++;
+            channelsCloned++;
+            const progress =
+                channelsProgressStart +
+                (channelsProgressEnd - channelsProgressStart) * 0.2 +
+                (chStored / Math.max(remainingChannels.length, 1)) *
+                    ((channelsProgressEnd - channelsProgressStart) * 0.8);
+            updateWithTime(
+                `${actionLabel} channel ${chStored}/${remainingChannels.length}: ${ch.name}`,
+                progress,
+                remainingChannels.length - chStored
+            );
         } catch (e: any) {
             if (e?.rateLimitExhausted) {
-                channelsFailed += (remainingChannels.length - chStored);
+                channelsFailed += remainingChannels.length - chStored;
                 updateWithTime(`Rate limited, skipping remaining channels...`, channelsProgressEnd);
-                break;
+                skipRemaining = true;
+                return;
             }
             channelsFailed++;
+            state.failedItems.push({
+                context: "Channel",
+                name: ch.name,
+                error: (e as Error)?.message || String(e),
+                sourceData: ch,
+            });
             handleCloneError("Channel", e, ch.name);
         }
-    }
+    });
 
-    return channelsFailed;
+    await Promise.all(channelPromises);
+
+    return { channelsCloned, categoriesCloned, channelsFailed, categoriesFailed };
 }
