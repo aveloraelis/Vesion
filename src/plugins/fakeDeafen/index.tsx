@@ -6,13 +6,13 @@
 
 import { definePluginSettings } from "@api/Settings";
 import { openPluginModal } from "@components/settings";
+import { addSettingsPanelButton, DeafenIcon, removeSettingsPanelButton } from "@plugins/philsPluginLibrary";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { ContextMenuApi, FluxDispatcher, Menu } from "@webpack/common";
 import type { MouseEvent } from "react";
-import plugins from "~plugins";
 
-import { addSettingsPanelButton, DeafenIcon, removeSettingsPanelButton } from "@plugins/philsPluginLibrary";
+import plugins from "~plugins";
 
 export let fakeD = false;
 
@@ -178,7 +178,7 @@ function toggleFakeDeafen() {
 
 let keydownListener: ((e: KeyboardEvent) => void) | null = null;
 
-function parseKeybind(keybind: string): { ctrl: boolean; shift: boolean; alt: boolean; key: string } {
+function parseKeybind(keybind: string): { ctrl: boolean; shift: boolean; alt: boolean; key: string; } {
     const parts = keybind.toLowerCase().split("+");
     return {
         ctrl: parts.includes("ctrl") || parts.includes("control"),
@@ -220,13 +220,20 @@ export default definePlugin({
     description: "You're deafened but you're not.",
     dependencies: ["PhilsPluginLibrary"],
     authors: [Devs["3Tb"]],
-
     patches: [
         {
             find: "}voiceStateUpdate(",
             replacement: {
                 match: /self_mute:([^,]+),self_deaf:([^,]+),self_video:([^,]+)/,
                 replace: "self_mute:$self.toggle($1, 'mute'),self_deaf:$self.toggle($2, 'deaf'),self_video:$self.toggle($3, 'video')"
+            }
+        },
+        {
+            find: ".isSelfDeaf(),!1]:[",
+            all: true,
+            replacement: {
+                match: /\[(!\i\.\i\.isSupported\(\)\|\|\i\.\i\.isSelfMute\(\)\|\|\i\.\i\.isSelfMutedTemporarily\(\)),(\i\.\i)\.isSelfDeaf\(\),!1\]:\[/,
+                replace: "[$self.toggle($1, 'mute'),$self.toggle($2.isSelfDeaf(), 'deaf'),!1]:["
             }
         }
     ],
