@@ -2,7 +2,7 @@ import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
-import { showToast, Toasts } from "@webpack/common";
+import { showToast } from "@webpack/common";
 
 const logger = new Logger("SpotifyPauseBlocker", "#1DB954");
 
@@ -118,7 +118,7 @@ function enableBlocker() {
 
     logger.info("Spotify Pause Blocker enabled");
     if (settings.store.showToasts) {
-        showToast("SpotifyPauseBlocker: enabled", Toasts.Type.SUCCESS);
+        showToast({ text: "SpotifyPauseBlocker: enabled", variant: "success" });
     }
 }
 
